@@ -76,21 +76,24 @@ class fileEMDVeloxWithSpectra(nio.emdVelox.fileEMDVelox):
         Stores the mapping for in self.img_titles
         """
         self.img_titles = {}
-        if "SharedProperties/DisplayGroupItem" not in self._file_hdl: 
+        if "Displays/ImageDisplay" not in self._file_hdl: 
             return 
-        display_groups = self._file_hdl["SharedProperties/DisplayGroupItem"]
-        for group in display_groups.values():
-            display_group_dict = parse_dataset_as_dict(group)
-            # /Displays/ImageDisplay/___
-            image_display_path = display_group_dict['display']
-            image_display_dict = parse_dataset_as_dict(self._file_hdl.get(image_display_path))
-            # /SharedProperties/ImageSeriesDataReference/___
-            data_ref_path = image_display_dict["data"]
-            data_ref_dict = parse_dataset_as_dict(self._file_hdl.get(data_ref_path))
-            data_path = data_ref_dict["dataPath"]
-            groupType = display_group_dict['groupType'].upper()
-            self.img_titles[data_path] = {'groupType': PROCESSED_IMAGE_GROUP_NAME if groupType == "EDS" else groupType, 
-                                          'title': display_group_dict['name']} 
+        list_of_datasets = self._file_hdl["Displays/ImageDisplay"]
+        for group in list_of_datasets.values():
+            dataset_dict = parse_dataset_as_dict(group)
+            if "data" not in dataset_dict: # ignore any images that are not linked to data
+                continue
+            else:
+                data_ref_path = dataset_dict["data"]
+                data_ref_dict = parse_dataset_as_dict(self._file_hdl.get(data_ref_path))
+                data_path = data_ref_dict["dataPath"]
+                stem_detectors = ['BF', 'DF']
+                if any(detectors in dataset_dict['title'] for detectors in stem_detectors): #if DF or BF in title
+                    groupType = "STEM"
+                else:
+                    groupType = PROCESSED_IMAGE_GROUP_NAME
+                self.img_titles[data_path] = {'groupType': groupType, 
+                                          'title': dataset_dict['title']} 
 
     def getMetadata(self, group):
         """ Reads important metadata from Velox EMD files.
@@ -125,6 +128,18 @@ class fileEMDVeloxWithSpectra(nio.emdVelox.fileEMDVelox):
         meta_data.update({'General': general_md})
 
         return meta_data
+
+
+    def getThumbnail(self):
+        """
+        Returns the saved thumbnail image from the EMD file, if it exists.
+        """
+        if 'Thumbnail.jpg' not in self._file_hdl:
+            logger.info(f'Thumbnail.jpg not in file')
+            return None
+        thumbnail_dataset = self._file_hdl['Thumbnail.jpg']
+        thumbnail_image = Image.open(io.BytesIO(thumbnail_dataset[()].tobytes()))
+        return thumbnail_image
 
     def getThumbnailImageDataset(self):
         """
@@ -218,13 +233,11 @@ class VeloxEmdIngestor(CrucibleDatasetIngestor):
         """       
         try:            
             with fileEMDVeloxWithSpectra(self.file_to_upload) as emd1:
-                image_array = emd1.getThumbnailImageDataset()
-            
-            if image_array is not None: 
-                return self._generate_thumbnail_from_array(image_array)
-            else: 
-                logger.info(f'image_array was none for {self.unique_id}')
-
+                thumbnail_img = emd1.getThumbnail()
+                if thumbnail_img is not None:
+                    return thumbnail_img
+                else:
+                    logger.info(f"No thumbnail found.")
             return None
         except Exception as e:
             logger.error(f"Failed to generate thumbnail: {e}")
